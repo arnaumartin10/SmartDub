@@ -1,0 +1,54 @@
+# Model checkpoints & large binaries
+models/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.pkl
+*.h5
+
+# Data directories
+data/inputs/
+data/outputs/
+
+# Python environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Conda
+.conda/
+*.conda
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb~
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# Logs & temp
+*.log
+logs/
+tmp/
+temp/
+wandb/
+mlruns/
+
+# dotenv
+.env
+.env.*

@@ -1,0 +1,47 @@
+name: lipsync
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10.14
+  - pip
+
+  # PyTorch with CUDA 12.1 — installed via pip inside conda env
+  # (conda pytorch channel lags behind; pip gives exact CUDA variant)
+  - pip:
+    - torch==2.5.1+cu121
+    - torchvision==0.20.1+cu121
+    - torchaudio==2.5.1+cu121
+    - --index-url https://download.pytorch.org/whl/cu121
+
+    # Computer vision & media
+    - opencv-python==4.10.0.84
+    - ffmpeg-python==0.2.0
+
+    # Numerical
+    - numpy==1.26.4
+    - scipy==1.14.1
+
+    # Utilities
+    - tqdm==4.67.1
+    - pyyaml==6.0.2
+
+    # HuggingFace
+    - huggingface_hub==0.26.5
+    - transformers==4.47.1
+    - accelerate==1.2.1
+    - diffusers==0.32.1
+
+    # Audio
+    - librosa==0.10.2.post1
+    - soundfile==0.12.1
+
+    # Testing & dev
+    - pytest==8.3.4
+    - pytest-cov==6.0.0
+    - black==24.10.0
+    - isort==5.13.2
+    - flake8==7.1.1
