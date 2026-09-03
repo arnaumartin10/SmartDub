@@ -23,22 +23,32 @@ def test_torch_importable():
 
 
 def test_torch_version_major():
-    """Require torch >= 2.5."""
+    """Require torch >= 2.x everywhere; >= 2.5 on Linux (Ubuntu target)."""
+    import platform
     import torch
 
     major, minor, *_ = torch.__version__.split(".")
     assert int(major) >= 2, f"Expected torch >= 2.x, got {torch.__version__}"
-    if int(major) == 2:
-        assert int(minor) >= 5, f"Expected torch >= 2.5, got {torch.__version__}"
+    if platform.system() == "Linux" and int(major) == 2:
+        # On the Ubuntu target, enforce the cu121 wheel (2.5.1)
+        assert int(minor) >= 5, (
+            f"Expected torch >= 2.5 on Linux/CUDA target, got {torch.__version__}. "
+            "Run `make setup` to install the cu121 wheel."
+        )
 
 
+@pytest.mark.skipif(
+    __import__("platform").system() != "Linux",
+    reason="cu121 wheel check only enforced on Linux target (macOS uses CPU-only wheel for dev)",
+)
 def test_cuda_compiled():
-    """PyTorch must have been compiled with CUDA (not CPU-only wheel)."""
+    """PyTorch must have been compiled with CUDA (not CPU-only wheel) on Linux."""
     import torch
 
     assert torch.version.cuda is not None, (
         "torch.version.cuda is None — you have a CPU-only PyTorch wheel. "
-        "Reinstall with the cu121 index URL."
+        "Reinstall via: pip install torch==2.5.1+cu121 "
+        "--index-url https://download.pytorch.org/whl/cu121"
     )
 
 

@@ -12,6 +12,8 @@ opencv-python==4.10.0.84
 ffmpeg-python==0.2.0
 
 # Numerical computing
+# IMPORTANT: torch 2.x was compiled against the NumPy 1.x ABI.
+# Do NOT upgrade numpy to >=2.0 — it will produce import warnings and may crash.
 numpy==1.26.4
 scipy==1.14.1
 
