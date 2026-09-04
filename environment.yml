@@ -33,6 +33,7 @@ dependencies:
     # HuggingFace
     - huggingface_hub==0.36.2
     - transformers==4.48.3
+    - tokenizers==0.21.4
     - accelerate==1.2.1
     - diffusers==0.32.1
 

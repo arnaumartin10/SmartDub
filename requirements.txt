@@ -29,6 +29,9 @@ pyyaml==6.0.2
 # HuggingFace ecosystem
 huggingface_hub==0.26.5
 transformers==4.48.3
+# Transformers 4.48.3 requires tokenizers>=0.21,<0.22; pin this so Colab's
+# preinstalled 0.23.x cannot break WhisperX at import time.
+tokenizers==0.21.4
 accelerate==1.2.1
 diffusers==0.32.1
 
