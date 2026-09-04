@@ -425,8 +425,18 @@ def _track_face_tasks(
             pixels = _landmarks_to_pixels(best_landmarks, width, height)
             bbox = _bbox_from_pixels(pixels)
             smoothed_bbox = smoother.update(bbox)
-            presence_values = [getattr(point, "presence", 1.0) for point in best_landmarks]
-            confidence = float(np.clip(np.mean(presence_values), 0.0, 1.0))
+            presence_values = [
+                float(point.presence)
+                for point in best_landmarks
+                if getattr(point, "presence", None) is not None
+            ]
+            # Tasks may omit per-landmark presence; a detected face is then the
+            # best available confidence signal for this compatibility path.
+            confidence = (
+                float(np.clip(np.mean(presence_values), 0.0, 1.0))
+                if presence_values
+                else 1.0
+            )
             results.append(
                 {
                     "frame_number": frame_idx,
