@@ -98,6 +98,10 @@ assert metadata.version("ctranslate2") == "4.8.2"
 assert metadata.version("onnxruntime") == "1.20.1"
 assert tuple(int(part) for part in cv2.__version__.split(".")[:2]) >= (5, 0)
 assert tuple(int(part) for part in mediapipe.__version__.split(".")[:2]) >= (0, 10)
+assert mediapipe.__version__ == "0.10.35", (
+  f"Unexpected MediaPipe version {mediapipe.__version__}; restart the runtime "
+  "and rerun the installation cell."
+)
 print("Imports: whisperx, faster_whisper, onnxruntime OK")
 print("Imports: cv2, mediapipe, scenedetect OK")
 print("Dependency installation completed successfully.")

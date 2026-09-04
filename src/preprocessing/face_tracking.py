@@ -234,7 +234,9 @@ def track_face(
         FileNotFoundError:  If *video_path* does not exist.
         IOError:            If the video cannot be opened by OpenCV.
     """
-    import mediapipe as mp  # lazy import — avoids slow load when unused
+    # Import the legacy solutions modules directly. Newer MediaPipe releases may
+    # omit the historical ``mediapipe.solutions`` top-level attribute.
+    from mediapipe.python.solutions import face_detection, face_mesh
 
     from pathlib import Path
 
@@ -258,16 +260,13 @@ def track_face(
     smoother = _BBoxEMA(alpha=ema_alpha)
     results: list[Optional[dict]] = []
 
-    mp_face_mesh = mp.solutions.face_mesh
-    mp_face_detection = mp.solutions.face_detection
-
-    with mp_face_mesh.FaceMesh(
+    with face_mesh.FaceMesh(
         static_image_mode=False,      # tracking mode: faster, temporally stable
         max_num_faces=max_faces,
         refine_landmarks=True,         # adds iris + lip refinement landmarks
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
-    ) as face_mesh, mp_face_detection.FaceDetection(
+    ) as face_mesh_solution, face_detection.FaceDetection(
         model_selection=0,
         min_detection_confidence=min_detection_confidence,
     ) as face_detector:
@@ -282,7 +281,7 @@ def track_face(
 
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             detection_result = face_detector.process(rgb)
-            mp_result = face_mesh.process(rgb)
+            mp_result = face_mesh_solution.process(rgb)
 
             if not mp_result.multi_face_landmarks:
                 logger.debug("Frame %d: no face detected", frame_idx)
