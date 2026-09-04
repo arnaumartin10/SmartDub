@@ -62,7 +62,8 @@ def _landmarks_to_pixels(
     face_lms, width: int, height: int
 ) -> list[tuple[float, float]]:
     """Convert normalised MediaPipe landmarks to pixel-space (x, y) tuples."""
-    return [(lm.x * width, lm.y * height) for lm in face_lms.landmark]
+    points = getattr(face_lms, "landmark", face_lms)
+    return [(lm.x * width, lm.y * height) for lm in points]
 
 
 def _bbox_from_pixels(
@@ -192,6 +193,7 @@ def track_face(
     max_faces: int = 10,
     min_detection_confidence: float = 0.5,
     min_tracking_confidence: float = 0.5,
+    face_landmarker_model_path: str = "models/face_landmarker.task",
 ) -> list[Optional[dict]]:
     """
     Track the primary speaking face across every frame of a scene.
@@ -234,10 +236,6 @@ def track_face(
         FileNotFoundError:  If *video_path* does not exist.
         IOError:            If the video cannot be opened by OpenCV.
     """
-    # Import the legacy solutions modules directly. Newer MediaPipe releases may
-    # omit the historical ``mediapipe.solutions`` top-level attribute.
-    from mediapipe.python.solutions import face_detection, face_mesh
-
     from pathlib import Path
 
     path = Path(video_path)
@@ -259,6 +257,20 @@ def track_face(
 
     smoother = _BBoxEMA(alpha=ema_alpha)
     results: list[Optional[dict]] = []
+
+    try:
+        # MediaPipe <=0.10.21 exposes the legacy API used by the original tracker.
+        from mediapipe.python.solutions import face_detection, face_mesh
+    except ImportError:
+        return _track_face_tasks(
+            video_path,
+            scene_bounds,
+            ema_alpha,
+            max_faces,
+            min_detection_confidence,
+            min_tracking_confidence,
+            face_landmarker_model_path,
+        )
 
     with face_mesh.FaceMesh(
         static_image_mode=False,      # tracking mode: faster, temporally stable
@@ -341,4 +353,97 @@ def track_face(
         n_missed,
     )
 
+    return results
+
+
+def _track_face_tasks(
+    video_path: str,
+    scene_bounds: tuple[int, int],
+    ema_alpha: float,
+    max_faces: int,
+    min_detection_confidence: float,
+    min_tracking_confidence: float,
+    face_landmarker_model_path: str,
+) -> list[Optional[dict]]:
+    """Track faces with MediaPipe Tasks when legacy solutions are unavailable."""
+    from pathlib import Path
+
+    import mediapipe as mp
+    from mediapipe.tasks import python
+    from mediapipe.tasks.python import vision
+
+    model_path = Path(face_landmarker_model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(
+            "MediaPipe Tasks requires face_landmarker.task. "
+            f"Download it to {model_path} before tracking."
+        )
+
+    start_frame, end_frame = scene_bounds
+    n_frames = end_frame - start_frame + 1
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise IOError(f"OpenCV cannot open video: {video_path}")
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, float(start_frame))
+    smoother = _BBoxEMA(alpha=ema_alpha)
+    results: list[Optional[dict]] = []
+    options = vision.FaceLandmarkerOptions(
+        base_options=python.BaseOptions(model_asset_path=str(model_path)),
+        running_mode=vision.RunningMode.VIDEO,
+        num_faces=max_faces,
+        min_face_detection_confidence=min_detection_confidence,
+        min_face_presence_confidence=min_detection_confidence,
+        min_tracking_confidence=min_tracking_confidence,
+        output_face_blendshapes=False,
+        output_facial_transformation_matrixes=False,
+    )
+
+    with vision.FaceLandmarker.create_from_options(options) as landmarker:
+        for frame_idx in range(start_frame, end_frame + 1):
+            ret, bgr = cap.read()
+            if not ret:
+                logger.warning("Frame %d: read() failed", frame_idx)
+                smoother.update(None)
+                results.append(None)
+                continue
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            timestamp_ms = int(frame_idx * 1000 / (cap.get(cv2.CAP_PROP_FPS) or 30.0))
+            task_result = landmarker.detect_for_video(image, timestamp_ms)
+            if not task_result.face_landmarks:
+                results.append(None)
+                continue
+
+            best_landmarks = max(
+                task_result.face_landmarks,
+                key=lambda face: _bbox_area(
+                    _bbox_from_pixels(_landmarks_to_pixels(face, width, height))
+                ),
+            )
+            pixels = _landmarks_to_pixels(best_landmarks, width, height)
+            bbox = _bbox_from_pixels(pixels)
+            smoothed_bbox = smoother.update(bbox)
+            presence_values = [getattr(point, "presence", 1.0) for point in best_landmarks]
+            confidence = float(np.clip(np.mean(presence_values), 0.0, 1.0))
+            results.append(
+                {
+                    "frame_number": frame_idx,
+                    "bounding_box": smoothed_bbox,
+                    "landmarks": pixels,
+                    "confidence": confidence,
+                }
+            )
+
+    cap.release()
+    n_detected = sum(result is not None for result in results)
+    logger.info(
+        "MediaPipe Tasks scene frames %d–%d: %d/%d faces detected, %d missed",
+        scene_bounds[0],
+        scene_bounds[1],
+        n_detected,
+        n_frames,
+        n_frames - n_detected,
+    )
     return results

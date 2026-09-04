@@ -124,8 +124,13 @@ print("Dependency installation completed successfully.")
   --local-dir models/whisper \
   --include "config.json" "pytorch_model.bin" "preprocessor_config.json"
 
+# MediaPipe modern (Colab/Python 3.13) uses Tasks instead of legacy Solutions.
+!wget -q --show-progress -O models/face_landmarker.task \
+  https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
+
 from pathlib import Path
 required_checkpoints = [
+  Path("models/face_landmarker.task"),
     Path("models/musetalkV15/musetalk.json"),
     Path("models/musetalkV15/unet.pth"),
     Path("models/sd-vae/config.json"),
@@ -134,7 +139,11 @@ required_checkpoints = [
     Path("models/whisper/pytorch_model.bin"),
     Path("models/whisper/preprocessor_config.json"),
 ]
-missing = [str(path) for path in required_checkpoints if not path.is_file()]
+missing = [
+  str(path)
+  for path in required_checkpoints
+  if not path.is_file() or path.stat().st_size == 0
+]
 if missing:
     raise RuntimeError(f"Checkpoint download failed; missing files: {missing}")
 print("Download completed. Checkpoint files:")
@@ -195,4 +204,4 @@ print('Repository, checkpoints, and wrapper paths are ready.')
 
 MuseTalk upstream recomana Torch 2.0.1/CUDA 11.8, però PyPI `whisperx==3.8.6` requereix Torch 2.8, NumPy >=2.1, Transformers >=4.48, `faster-whisper>=1.2` i `ctranslate2>=4.5`. Per això el projecte fixa `whisperx==3.8.6` i `ctranslate2==4.8.2`; són versions estables disponibles a PyPI. La instal·lació de Colab usa `--no-deps` per als paquets que podrien reemplaçar Torch i instal·la explícitament `onnxruntime`, necessari per al VAD de faster-whisper, i `pyannote-audio`/`torchcodec`, necessaris per importar WhisperX 3.8.6. El Torch/CUDA preinstal·lat ha de passar la comprovació abans de continuar.
 
-El demo extreu el crop de cara sencera a partir de la bounding box de `face_tracking.py`; el `mouth_roi.py` queda reservat per al compositing posterior. El wrapper converteix aquest crop facial, que pot ser rectangular, amb padding de replicació de vora a `256x256` i retorna crops BGR quadrats. No fa composició sobre el vídeo vertical ni usa la timeline de visemes per condicionar MuseTalk: el model és audio-driven. La qualitat de l’adaptació a la bounding box facial, la sincronització del nombre de frames i l’estabilitat visual requereixen validació real a la T4.
+El demo extreu el crop de cara sencera a partir de la bounding box de `face_tracking.py`; el `mouth_roi.py` queda reservat per al compositing posterior. En Colab/Python 3.13, MediaPipe usa Tasks i el fitxer `models/face_landmarker.task`; en entorns legacy el tracker conserva compatibilitat amb Solutions. El wrapper converteix aquest crop facial, que pot ser rectangular, amb padding de replicació de vora a `256x256` i retorna crops BGR quadrats. No fa composició sobre el vídeo vertical ni usa la timeline de visemes per condicionar MuseTalk: el model és audio-driven. La qualitat de l’adaptació a la bounding box facial, la sincronització del nombre de frames i l’estabilitat visual requereixen validació real a la T4.
