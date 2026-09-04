@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # lipsync-pipeline Makefile
-# Target OS: Ubuntu 22.04 | Python 3.10 | CUDA 12.1
+# Target OS: Ubuntu 22.04 | Python 3.10 | CUDA 12.8
 # ─────────────────────────────────────────────────────────────────────────────
 
 PYTHON      := python3.10
@@ -9,7 +9,7 @@ PIP         := $(VENV)/bin/pip
 PYTEST      := $(VENV)/bin/pytest
 PYTHON_VENV := $(VENV)/bin/python
 
-TORCH_INDEX := https://download.pytorch.org/whl/cu121
+TORCH_INDEX := https://download.pytorch.org/whl/cu128
 
 .PHONY: help setup setup-conda test demo check-cuda lint format clean
 
@@ -33,11 +33,11 @@ setup:
 	$(PYTHON) -m venv $(VENV)
 	@echo ">>> Upgrading pip / setuptools / wheel ..."
 	$(PIP) install --upgrade pip setuptools wheel
-	@echo ">>> Installing PyTorch 2.5.1 with CUDA 12.1 ..."
+	@echo ">>> Installing PyTorch 2.8.0 with CUDA 12.8 ..."
 	$(PIP) install \
-		torch==2.5.1+cu121 \
-		torchvision==0.20.1+cu121 \
-		torchaudio==2.5.1+cu121 \
+		torch==2.8.0+cu128 \
+		torchvision==0.23.0+cu128 \
+		torchaudio==2.8.0+cu128 \
 		--index-url $(TORCH_INDEX)
 	@echo ">>> Installing remaining dependencies ..."
 	$(PIP) install -r requirements.txt \

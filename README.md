@@ -63,7 +63,7 @@ Dubbed Audio ──┘
 | Python | 3.10 |
 | CUDA driver | ≥ 525.85 (for CUDA 12.1) |
 | GPU | NVIDIA RTX 4090 or A100 (≥ 16 GB VRAM) |
-| PyTorch | 2.5.1 + cu121 |
+| PyTorch | 2.8.0 + cu128 |
 | System packages | `ffmpeg`, `libsndfile1` |
 
 Install system packages first (Ubuntu):
@@ -97,12 +97,12 @@ source .venv/bin/activate
 `make setup` will:
 - Create `.venv/` using `python3.10 -m venv`
 - Upgrade pip / setuptools / wheel
-- Install PyTorch 2.5.1 with CUDA 12.1 from the official PyTorch wheel index
+- Install PyTorch 2.8.0 with CUDA 12.8 from the official PyTorch wheel index
 - Install all other pinned dependencies from `requirements.txt`
 - Run `scripts/check_cuda.py` — **the setup will FAIL loudly if CUDA is not accessible**
 
 > **Why venv over conda?**  `pip` gives access to the official CUDA-variant torch wheels
-> (`+cu121` suffix) the moment they are released, while the conda `pytorch` channel
+> (`+cu128` suffix) the moment they are released, while the conda `pytorch` channel
 > typically lags by days to weeks.  For reproducibility, all deps are pinned in
 > `requirements.txt`.
 
@@ -124,8 +124,8 @@ python scripts/check_cuda.py
 Expected output on a healthy machine:
 
 ```
-  torch version : 2.5.1+cu121
-  CUDA compiled : 12.1
+  torch version : 2.8.0+cu128
+  CUDA compiled : 12.8
 
 ✓ CUDA is available — 1 device(s) found:
   [0] NVIDIA GeForce RTX 4090

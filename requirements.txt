@@ -1,22 +1,25 @@
-# Core deep learning stack — CUDA 12.1 compatible (tested 2025-12)
+# Core deep learning stack — modern WhisperX 3.8.6 compatibility.
 # Install torch ecosystem via pip index URL (see README / Makefile):
 #   pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121 \
 #       --index-url https://download.pytorch.org/whl/cu121
 
-torch==2.5.1
-torchvision==0.20.1
-torchaudio==2.5.1
+# WhisperX 3.8.6 requires torch~=2.8.0, numpy>=2.1 and transformers>=4.48.
+# Do not install this block over Colab's pre-installed CUDA stack; see docs/.
+torch==2.8.0
+torchvision==0.23.0
+torchaudio==2.8.0
 
 # Computer vision & media
-opencv-python==4.9.0.80
+# OpenCV 4.9 was built against NumPy 1.x; this contrib wheel supports NumPy 2
+# and satisfies MediaPipe without installing two competing cv2 providers.
+opencv-contrib-python==5.0.0.93
 ffmpeg-python==0.2.0
-mediapipe==0.10.21
+mediapipe==0.10.35
 
 # Numerical computing
-# IMPORTANT: torch 2.x was compiled against the NumPy 1.x ABI.
-# Do NOT upgrade numpy to >=2.0 — it will produce import warnings and may crash.
-numpy==1.26.4
-scipy==1.14.1
+# WhisperX 3.8.6 no longer supports the old NumPy 1.x pin.
+numpy==2.1.3
+scipy==1.15.3
 
 # Utilities
 tqdm==4.67.1
@@ -24,7 +27,7 @@ pyyaml==6.0.2
 
 # HuggingFace ecosystem
 huggingface_hub==0.26.5
-transformers==4.47.1
+transformers==4.48.3
 accelerate==1.2.1
 diffusers==0.32.1
 
@@ -32,9 +35,14 @@ diffusers==0.32.1
 librosa==0.10.2.post1
 soundfile==0.12.1
 g2p_en==2.1.0
-# WhisperX 3.3.x uses faster-whisper/CTranslate2 for ASR and wav2vec2 for alignment.
-# Keep numpy pinned at 1.26.4; install this line without allowing resolver upgrades.
-whisperx==3.3.1
+# PyPI currently provides this stable pair; 3.2.0 requires yanked ctranslate2==4.4.0.
+whisperx==3.8.6
+ctranslate2==4.8.2
+# faster-whisper 1.2.0 imports ONNX Runtime for VAD; keep it explicit so a
+# resolver warning cannot leave the installed WhisperX stack incomplete.
+onnxruntime==1.20.1
+pyannote-audio==4.0.0
+torchcodec==0.7.0
 
 # Testing
 pytest==8.3.4
