@@ -51,7 +51,7 @@ install(
   "diffusers==0.30.2", "accelerate==0.28.0",
   "transformers==4.48.3", "huggingface_hub==0.36.2",
   "whisperx==3.8.6", "faster-whisper==1.2.0", "ctranslate2==4.8.2",
-  "g2p_en==2.1.0", "mediapipe==0.10.35", "soundfile==0.12.1",
+  "g2p_en==2.1.0", "mediapipe==0.10.35", "scenedetect==0.6.7", "soundfile==0.12.1",
   "librosa==0.10.2.post1", "einops==0.8.1", "omegaconf", "ffmpeg-python",
   no_deps=True,
 )
@@ -80,6 +80,7 @@ import torch
 import numpy as np
 import cv2
 import mediapipe
+import scenedetect
 import onnxruntime
 import faster_whisper
 import whisperx
@@ -87,6 +88,7 @@ print(f"Torch: {torch.__version__}; CUDA: {torch.version.cuda}; disponible: {tor
 print("NumPy:", np.__version__)
 print("OpenCV:", cv2.__version__)
 print("MediaPipe:", mediapipe.__version__)
+print("PySceneDetect:", scenedetect.__version__)
 print("WhisperX:", metadata.version("whisperx"))
 print("CTranslate2:", metadata.version("ctranslate2"))
 print("ONNX Runtime:", metadata.version("onnxruntime"))
@@ -97,6 +99,7 @@ assert metadata.version("onnxruntime") == "1.20.1"
 assert tuple(int(part) for part in cv2.__version__.split(".")[:2]) >= (5, 0)
 assert tuple(int(part) for part in mediapipe.__version__.split(".")[:2]) >= (0, 10)
 print("Imports: whisperx, faster_whisper, onnxruntime OK")
+print("Imports: cv2, mediapipe, scenedetect OK")
 print("Dependency installation completed successfully.")
 ```
 
