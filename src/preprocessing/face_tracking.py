@@ -55,17 +55,6 @@ MOUTH_ALL_INDICES: tuple[int, ...] = tuple(
     sorted(set(MOUTH_OUTER_INDICES) | set(MOUTH_INNER_INDICES))
 )
 
-# Key structural landmarks used for confidence estimation
-_CONFIDENCE_INDICES = (
-    1,    # nose tip
-    33,   # left eye outer corner
-    263,  # right eye outer corner
-    61,   # mouth left corner
-    291,  # mouth right corner
-    10,   # forehead mid
-)
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -91,16 +80,70 @@ def _bbox_area(bbox: tuple[int, int, int, int]) -> int:
     return bbox[2] * bbox[3]
 
 
-def _landmark_confidence(face_lms_obj, indices: tuple[int, ...]) -> float:
+def _bbox_iou(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> float:
+    """Return intersection-over-union for two ``(x, y, w, h)`` boxes."""
+    first_x1, first_y1 = first[:2]
+    first_x2, first_y2 = first_x1 + first[2], first_y1 + first[3]
+    second_x1, second_y1 = second[:2]
+    second_x2, second_y2 = second_x1 + second[2], second_y1 + second[3]
+
+    intersection_w = max(0, min(first_x2, second_x2) - max(first_x1, second_x1))
+    intersection_h = max(0, min(first_y2, second_y2) - max(first_y1, second_y1))
+    intersection = intersection_w * intersection_h
+    union = _bbox_area(first) + _bbox_area(second) - intersection
+    return intersection / union if union else 0.0
+
+
+def _detection_bbox(detection, width: int, height: int) -> tuple[int, int, int, int]:
+    """Convert a MediaPipe Face Detection relative box to pixel coordinates."""
+    box = detection.location_data.relative_bounding_box
+    return (
+        int(box.xmin * width),
+        int(box.ymin * height),
+        max(1, int(box.width * width)),
+        max(1, int(box.height * height)),
+    )
+
+
+def _landmark_quality_proxy(face_lms_obj) -> float:
+    """Return a geometry-validity proxy when Face Detection has no score.
+
+    MediaPipe Face Mesh 0.10.21 exposes ``presence`` and ``visibility`` fields,
+    but both are always 0.0 for this solution. This proxy is therefore not a
+    MediaPipe confidence: it only measures the fraction of finite landmark
+    coordinates and is deliberately used only when the separate detector fails.
     """
-    Estimate detection confidence from the presence score of key landmarks.
-    Falls back to 1.0 if the MediaPipe version does not expose .presence.
-    """
-    try:
-        scores = [face_lms_obj.landmark[i].presence for i in indices]
-        return float(np.clip(np.mean(scores), 0.0, 1.0))
-    except AttributeError:
-        return 1.0  # presence not available in this MediaPipe build
+    points = [(landmark.x, landmark.y) for landmark in face_lms_obj.landmark]
+    valid = [
+        np.isfinite(x) and np.isfinite(y) and 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0
+        for x, y in points
+    ]
+    return float(np.mean(valid)) if valid else 0.0
+
+
+def _detection_confidence(
+    face_lms_obj,
+    detections,
+    mesh_bbox: tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> float:
+    """Get the native detector score for the mesh face, or the documented proxy."""
+    best_detection = None
+    best_iou = 0.0
+    for detection in detections or []:
+        detection_bbox = _detection_bbox(detection, width, height)
+        iou = _bbox_iou(mesh_bbox, detection_bbox)
+        if iou > best_iou:
+            best_iou = iou
+            best_detection = detection
+
+    if best_detection is not None:
+        return float(np.clip(best_detection.score[0], 0.0, 1.0))
+    return _landmark_quality_proxy(face_lms_obj)
 
 
 class _BBoxEMA:
@@ -184,7 +227,8 @@ def track_face(
               ``(x, y, w, h)`` in pixel coordinates.
             - ``landmarks``     (list[tuple[float, float]])  — 478 pixel-space
               ``(x, y)`` points from MediaPipe FaceMesh.
-            - ``confidence``    (float in [0, 1])  — mean landmark presence score.
+                        - ``confidence``    (float in [0, 1])  — native Face Detection score;
+                            falls back to a documented landmark geometry proxy.
 
     Raises:
         FileNotFoundError:  If *video_path* does not exist.
@@ -215,6 +259,7 @@ def track_face(
     results: list[Optional[dict]] = []
 
     mp_face_mesh = mp.solutions.face_mesh
+    mp_face_detection = mp.solutions.face_detection
 
     with mp_face_mesh.FaceMesh(
         static_image_mode=False,      # tracking mode: faster, temporally stable
@@ -222,7 +267,10 @@ def track_face(
         refine_landmarks=True,         # adds iris + lip refinement landmarks
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
-    ) as face_mesh:
+    ) as face_mesh, mp_face_detection.FaceDetection(
+        model_selection=0,
+        min_detection_confidence=min_detection_confidence,
+    ) as face_detector:
 
         for frame_idx in range(start_frame, end_frame + 1):
             ret, bgr = cap.read()
@@ -233,6 +281,7 @@ def track_face(
                 continue
 
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            detection_result = face_detector.process(rgb)
             mp_result = face_mesh.process(rgb)
 
             if not mp_result.multi_face_landmarks:
@@ -262,7 +311,13 @@ def track_face(
                 results.append(None)
                 continue
 
-            confidence = _landmark_confidence(best_lms_obj, _CONFIDENCE_INDICES)
+            confidence = _detection_confidence(
+                best_lms_obj,
+                detection_result.detections,
+                best_bbox,
+                width,
+                height,
+            )
             smoothed_bbox = smoother.update(best_bbox)
 
             results.append(

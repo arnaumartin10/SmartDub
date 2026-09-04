@@ -48,7 +48,7 @@ Source Video ──┐
 Dubbed Audio ──┘
 ```
 
-1. **Preprocessing** — Shot detection · face tracking · phoneme-level forced alignment
+1. **Preprocessing** — Shot detection · face tracking · WhisperX word alignment · G2P phonemes
 2. **Generation** — Coarse lip-sync model · high-detail refinement model
 3. **Postprocessing** — Temporal smoothing · Poisson face blending · super-resolution
 4. **QC** — SyncNet · FID · PESQ · SSIM · HTML report
@@ -161,13 +161,15 @@ code `1` — it will **never** silently fall back to CPU.
 ```bash
 # Full pipeline (placeholder — no model logic yet)
 .venv/bin/python src/pipeline.py \
-  --input  data/inputs/sample_video.mp4 \
+  --input  data/inputs/sample.mp4 \
   --audio  data/inputs/sample_dub.wav \
   --output data/outputs/result.mp4
 
 # Or via Makefile (requires sample files in data/inputs/)
 make demo
 ```
+
+> **Note on Testing Data:** The file `data/inputs/sample.mp4` provided in the repository might be a synthetic fallback video (generated via ffmpeg zoompan from a static public domain image). It is intended ONLY for smoke-testing the pipeline (e.g., verifying face tracking executes without crashing). Face tracking metrics from this synthetic file should not be used to judge real-world model performance. See `data/inputs/SOURCES.md` for media provenance.
 
 ---
 
@@ -186,14 +188,15 @@ make demo
 | Unit tests | `tests/test_pipeline.py`, `tests/test_cuda.py` | 11 tests pass |
 | Makefile | `Makefile` | setup, test, demo, lint, format, clean |
 
-### 🚧 Planned
+### 🚧 Planned / WIP
 
 | Stage | Module | Status |
 |-------|--------|--------|
 | **Preprocessing** | | |
-| Scene / shot detection | `src/preprocessing/scene_detector.py` | Planned |
-| Face detection + tracking | `src/preprocessing/face_tracker.py` | Planned |
-| Forced phoneme alignment | `src/preprocessing/forced_aligner.py` | Planned |
+| Scene / shot detection | `src/preprocessing/scene_detection.py` | ✅ Implemented |
+| Face detection + tracking | `src/preprocessing/face_tracking.py` | ✅ Implemented |
+| Forced alignment + viseme timeline | `src/preprocessing/forced_alignment.py`, `src/preprocessing/viseme_mapping.py` | ✅ Implemented and validated with real audio; WhisperX words → `g2p_en` ARPAbet phonemes → Preston Blair visemes |
+| MuseTalk coarse lip-sync wrapper | `src/generation/coarse_lipsync.py` | ✅ Implemented; Colab/T4 inference pending; see [Colab run instructions](docs/colab_run_instructions.md) |
 | **Generation** | | |
 | Coarse lip-sync model | `src/generation/coarse_model.py` | Planned |
 | Refinement / detail GAN | `src/generation/refinement_model.py` | Planned |
@@ -206,6 +209,16 @@ make demo
 | Perceptual metrics (FID, LPIPS) | `src/qc/perceptual.py` | Planned |
 | Audio quality (PESQ) | `src/qc/audio_quality.py` | Planned |
 | Report generator | `src/qc/reporter.py` | Planned |
+
+### Alignment limitations
+
+WhisperX supplies word timestamps and character alignments, not phonological
+phonemes. The alignment stage therefore uses `g2p_en` to convert each English
+transcript word to ARPAbet phonemes, then divides that word's WhisperX interval
+uniformly among its phonemes. This produces real phoneme labels suitable for the
+Preston Blair mapping, but the per-phoneme durations are an approximation rather
+than wav2vec2 measurements. The generated JSON stores both the timestamped
+`phonemes` and the frame-indexed `viseme_timeline`.
 
 ---
 

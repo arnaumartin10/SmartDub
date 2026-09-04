@@ -259,6 +259,39 @@ class TestFaceTracking:
             "Check that the video has a clearly visible face in the first second."
         )
 
+    @pytest.mark.skipif(
+        not Path("data/inputs/sample.mp4").exists(),
+        reason="data/inputs/sample.mp4 not found",
+    )
+    def test_confidence_changes_for_blurred_frame(self, tmp_path):
+        """Native detector confidence must respond to a deliberately blurred frame."""
+        from src.preprocessing.face_tracking import track_face
+
+        source = cv2.VideoCapture("data/inputs/sample.mp4")
+        ret, frame = source.read()
+        source.release()
+        if not ret:
+            pytest.skip("Could not read sample.mp4")
+
+        clear_path = tmp_path / "clear.mp4"
+        blurred_path = tmp_path / "blurred.mp4"
+        writer = cv2.VideoWriter(
+            str(clear_path), cv2.VideoWriter_fourcc(*"mp4v"), 25.0,
+            (frame.shape[1], frame.shape[0]),
+        )
+        writer.write(frame)
+        writer.release()
+        writer = cv2.VideoWriter(
+            str(blurred_path), cv2.VideoWriter_fourcc(*"mp4v"), 25.0,
+            (frame.shape[1], frame.shape[0]),
+        )
+        writer.write(cv2.GaussianBlur(frame, (0, 0), 15))
+        writer.release()
+
+        clear_result = next(r for r in track_face(str(clear_path), (0, 0)) if r)
+        blurred_result = next(r for r in track_face(str(blurred_path), (0, 0)) if r)
+        assert abs(clear_result["confidence"] - blurred_result["confidence"]) > 0.01
+
 
 # ── Mouth ROI Tests ───────────────────────────────────────────────────────────
 

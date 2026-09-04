@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import statistics
 import sys
 from pathlib import Path
 
@@ -239,6 +240,7 @@ def run(video_path: Path, output_dir: Path) -> dict:
         json.dump(all_tracking, f, indent=2)
 
     # ── Summary ───────────────────────────────────────────────────────────────
+    confidences = [entry["confidence"] for entry in all_tracking]
     avg_conf = confidence_sum / total_detected if total_detected > 0 else 0.0
     summary = {
         "video": str(video_path),
@@ -248,6 +250,9 @@ def run(video_path: Path, output_dir: Path) -> dict:
         "faces_missed": len(failed_frames),
         "detection_rate_pct": round(100 * total_detected / max(total_frames, 1), 2),
         "avg_confidence": round(avg_conf, 4),
+        "confidence_min": round(min(confidences), 4) if confidences else 0.0,
+        "confidence_max": round(max(confidences), 4) if confidences else 0.0,
+        "confidence_mean": round(statistics.fmean(confidences), 4) if confidences else 0.0,
         "failed_frame_numbers": failed_frames,
     }
 
@@ -269,6 +274,11 @@ def _print_summary(summary: dict) -> None:
     print(f"  Faces missed       : {summary['faces_missed']}")
     print(f"  Detection rate     : {summary['detection_rate_pct']:.1f}%")
     print(f"  Avg confidence     : {summary['avg_confidence']:.4f}")
+    print(
+        "  Confidence range   : "
+        f"{summary['confidence_min']:.4f}–{summary['confidence_max']:.4f} "
+        f"(mean {summary['confidence_mean']:.4f})"
+    )
     if summary["failed_frame_numbers"]:
         print(f"  Failed frames      : {summary['failed_frame_numbers'][:20]}", end="")
         if len(summary["failed_frame_numbers"]) > 20:
