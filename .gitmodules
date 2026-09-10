@@ -1,3 +1,6 @@
 [submodule "third_party/MuseTalk"]
 	path = third_party/MuseTalk
 	url = https://github.com/TMElyralab/MuseTalk.git
+[submodule "third_party/GFPGAN"]
+	path = third_party/GFPGAN
+	url = https://github.com/TencentARC/GFPGAN.git

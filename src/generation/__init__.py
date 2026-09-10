@@ -3,9 +3,12 @@ src/generation/__init__.py
 ───────────────────────────
 Generation sub-package.
 
-Planned modules:
+Modules:
   coarse_lipsync.py   — MuseTalk coarse audio-driven lip-sync generation
-  refinement_model.py — High-frequency detail refinement / GAN-based upscaler
+  refinement.py       — GFPGAN-based high-frequency detail refinement
 """
 
-# Status: MuseTalk coarse generation implemented; GPU output validation pending.
+from src.generation.coarse_lipsync import CoarseLipSyncGenerator
+from src.generation.refinement import FaceRefiner
+
+__all__ = ["CoarseLipSyncGenerator", "FaceRefiner"]

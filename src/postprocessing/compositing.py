@@ -5,27 +5,32 @@ Composite MuseTalk's 256×256 generated face crop back into the original
 full-resolution video frame with soft, seamless blending.
 
 Key steps:
-  1. **Geometric inversion** — undo the square-pad-and-resize that was applied
+  1. **Refinement (optional)** — apply GFPGAN restoration to the 256×256 crop
+     to recover crisp high-frequency facial details before upscaling.
+  2. **Geometric inversion** — undo the square-pad-and-resize that was applied
      in `coarse_lipsync._square_musetalk_frame` before feeding the crop to
-     MuseTalk.  This is the most critical step: the 256×256 output is
-     "un-squared" back to the original rectangular bbox dimensions.
-  2. **Colour matching** — adjust the crop's colour distribution to the
+     MuseTalk. The 256×256 output is "un-squared" back to the original
+     rectangular bbox dimensions.
+  3. **Colour matching** — adjust the crop's colour distribution to the
      surrounding original pixels (delegated to `color_matching.match_color`).
-  3. **Soft alpha mask** — build a feathered mask from the jaw/mouth landmarks
-     (convex hull + Gaussian blur) so the blend follows the face contour, not
-     the bounding-box edge.
-  4. **Alpha blend** — merge the colour-matched crop into the original frame.
+  4. **Soft alpha mask** — build an expanded, feathered mask from the jaw/chin/mouth
+     landmarks (convex hull + morphological dilation + Gaussian blur) so the blend
+     follows the natural face contour without harsh seam artifacts.
+  5. **Alpha blend** — merge the colour-matched crop into the original frame.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import cv2
 import numpy as np
 
 from src.postprocessing.color_matching import match_color
+
+if TYPE_CHECKING:
+    from src.generation.refinement import FaceRefiner
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +49,14 @@ MOUTH_OUTER_INDICES: tuple[int, ...] = (
     409, 270, 269, 267, 0, 37, 39, 40, 185,
 )
 
+# Lower face & chin landmarks to ensure coverage of the entire lower jaw region
+LOWER_FACE_INDICES: tuple[int, ...] = (
+    164, 167, 165, 92, 186, 57, 43, 106, 182, 83, 18, 313, 406, 273, 287, 410, 322,
+)
+
 # Combined indices for the blending mask hull
 _BLEND_MASK_INDICES: tuple[int, ...] = tuple(
-    sorted(set(JAW_CONTOUR_INDICES) | set(MOUTH_OUTER_INDICES))
+    sorted(set(JAW_CONTOUR_INDICES) | set(MOUTH_OUTER_INDICES) | set(LOWER_FACE_INDICES))
 )
 
 
@@ -117,20 +127,32 @@ def _build_alpha_mask(
     landmarks: list[tuple[float, float]],
     bbox: tuple[int, int, int, int],
     blur_kernel: int = 51,
+    mask_dilation: int = 15,
 ) -> np.ndarray:
-    """Build a feathered [0, 1] alpha mask from jaw/mouth landmarks.
+    """Build an expanded, feathered [0, 1] alpha mask from jaw/mouth landmarks.
 
-    The mask is a convex hull of jaw + mouth-contour landmarks, filled as a
-    binary mask and then Gaussian-blurred to produce soft, feathered edges.
-    The mask is computed in full-frame coordinates.
+    Tradeoff Note on Feathering & Dilation:
+    ───────────────────────────────────────
+    - **Too narrow feathering** (e.g. small blur, 0 dilation): Creates an abrupt
+      transition seam tightly outlining the mouth/lips, causing noticeable
+      boundary edge artifacts (high boundary score).
+    - **Too wide feathering** (e.g. huge blur, excessive dilation): Encroaches
+      deep into the cheeks and jaw skin; if the generated model's lighting or skin
+      texture slightly differs from the original, a blurry halo or lighting mismatch
+      becomes visible on the cheeks.
+    - **Default values** (`blur_kernel=51`, `mask_dilation=15`): Extends the blend
+      region smoothly over the chin crease and lower jawline while preserving
+      untouched upper cheek skin.
 
     Args:
-        frame_shape: ``(height, width)`` of the full-resolution frame.
-        landmarks:   478-point pixel-space landmarks from ``track_face``.
-        bbox:        ``(x, y, w, h)`` bounding box (used as fallback if
-                     landmark indices are out of range).
-        blur_kernel: Gaussian blur kernel size (must be odd).  Larger values
-                     produce wider feathering.  51 works well for 1080p.
+        frame_shape:   ``(height, width)`` of the full-resolution frame.
+        landmarks:     478-point pixel-space landmarks from ``track_face``.
+        bbox:          ``(x, y, w, h)`` bounding box (used as fallback if
+                       landmark indices are out of range).
+        blur_kernel:   Gaussian blur kernel size (must be odd). Larger values
+                       produce wider, softer feathering. (Default: 51).
+        mask_dilation: Morphological dilation kernel size to expand the blend
+                       region outward into jaw/chin. (Default: 15).
 
     Returns:
         Float32 array of shape ``(height, width)`` with values in [0, 1].
@@ -169,7 +191,14 @@ def _build_alpha_mask(
         hull = cv2.convexHull(points)
         cv2.fillConvexPoly(mask, hull, 255)
 
-    # ── Feather the edges ────────────────────────────────────────────────────
+    # ── Morphological dilation (widen blend into chin/jaw) ────────────────────
+    if mask_dilation > 0:
+        d_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (mask_dilation, mask_dilation)
+        )
+        mask = cv2.dilate(mask, d_kernel)
+
+    # ── Feather the edges with Gaussian Blur ─────────────────────────────────
     mask_float = cv2.GaussianBlur(
         mask.astype(np.float32), (blur_kernel, blur_kernel), 0
     )
@@ -189,24 +218,29 @@ def composite_frame(
     generated_crop: np.ndarray,
     bbox: tuple[int, int, int, int],
     landmarks: list[tuple[float, float]],
+    refiner: Optional[FaceRefiner] = None,
     apply_color_match: bool = True,
     blur_kernel: int = 51,
+    mask_dilation: int = 15,
 ) -> np.ndarray:
     """Composite a MuseTalk 256×256 crop back into the original full frame.
 
     Pipeline:
-      1. Geometric inversion: 256×256 → original bbox rectangle
-      2. Colour matching (optional): align to surrounding pixels
-      3. Soft alpha mask: convex hull of jaw/mouth landmarks + Gaussian blur
-      4. Alpha blend into original frame
+      1. GFPGAN Refinement (optional): restore detail on 256×256 crop
+      2. Geometric inversion: 256×256 → original bbox rectangle
+      3. Colour matching (optional): align to surrounding pixels
+      4. Soft alpha mask: convex hull of jaw/chin/mouth landmarks + dilation + Gaussian blur
+      5. Alpha blend into original frame
 
     Args:
-        original_frame:   Full-resolution BGR frame (e.g. 1080×1920).
-        generated_crop:   256×256 BGR crop from MuseTalk.
-        bbox:             ``(x, y, w, h)`` bounding box from ``track_face``.
-        landmarks:        478-point pixel-space landmarks from ``track_face``.
+        original_frame:    Full-resolution BGR frame (e.g. 1080×1920).
+        generated_crop:    256×256 BGR crop from MuseTalk.
+        bbox:              ``(x, y, w, h)`` bounding box from ``track_face``.
+        landmarks:         478-point pixel-space landmarks from ``track_face``.
+        refiner:           Optional FaceRefiner instance for detail restoration.
         apply_color_match: If True, run LAB colour matching before blending.
-        blur_kernel:      Gaussian kernel size for mask feathering.
+        blur_kernel:       Gaussian kernel size for mask feathering.
+        mask_dilation:     Morphological dilation size to widen mask into jaw/chin.
 
     Returns:
         Full-resolution BGR frame with the generated region composited in.
@@ -214,11 +248,16 @@ def composite_frame(
     frame_h, frame_w = original_frame.shape[:2]
     bx, by, bw, bh = bbox
 
-    # ── 1. Geometric inversion: 256×256 → original rectangle ────────────────
+    # ── 1. Optional GFPGAN Refinement ────────────────────────────────────────
+    # Run refinement before un-squaring so GFPGAN operates on standard 256x256 face
+    if refiner is not None:
+        generated_crop = refiner.refine(generated_crop)
+
+    # ── 2. Geometric inversion: 256×256 → original rectangle ────────────────
     # See _unsquare_crop docstring for the full geometric walkthrough.
     rect_crop = _unsquare_crop(generated_crop, bw, bh)
 
-    # ── 2. Clamp bbox to frame bounds ────────────────────────────────────────
+    # ── 3. Clamp bbox to frame bounds ────────────────────────────────────────
     x1 = max(0, bx)
     y1 = max(0, by)
     x2 = min(frame_w, bx + bw)
@@ -238,7 +277,7 @@ def composite_frame(
         crop_x_offset : crop_x_offset + paste_w,
     ]
 
-    # ── 3. Colour matching ───────────────────────────────────────────────────
+    # ── 4. Colour matching ───────────────────────────────────────────────────
     if apply_color_match:
         # Use a slightly expanded region around the bbox as the colour reference
         margin = max(20, int(0.15 * max(bw, bh)))
@@ -250,14 +289,18 @@ def composite_frame(
         if surrounding.size > 0 and rect_crop.size > 0:
             rect_crop = match_color(rect_crop, surrounding)
 
-    # ── 4. Build soft alpha mask ─────────────────────────────────────────────
+    # ── 5. Build soft alpha mask ─────────────────────────────────────────────
     alpha_mask = _build_alpha_mask(
-        (frame_h, frame_w), landmarks, bbox, blur_kernel=blur_kernel
+        (frame_h, frame_w),
+        landmarks,
+        bbox,
+        blur_kernel=blur_kernel,
+        mask_dilation=mask_dilation,
     )
     # Extract the mask region corresponding to the paste area
     mask_region = alpha_mask[y1:y2, x1:x2]
 
-    # ── 5. Alpha blend ───────────────────────────────────────────────────────
+    # ── 6. Alpha blend ───────────────────────────────────────────────────────
     result = original_frame.copy()
     orig_region = result[y1:y2, x1:x2].astype(np.float32)
     gen_region = rect_crop.astype(np.float32)

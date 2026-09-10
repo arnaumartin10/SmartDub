@@ -3,18 +3,27 @@ src/postprocessing/color_matching.py
 ─────────────────────────────────────
 Histogram matching in LAB colour space.
 
-The MuseTalk-generated face crop often has slightly different brightness and
-colour balance compared to the surrounding original frame (the generation
-model was trained on its own data distribution).  Matching statistics in LAB
-rather than RGB is more perceptually correct because the L channel isolates
-luminance from chrominance, avoiding cross-channel colour shifts.
+The MuseTalk-generated face crop often has slightly different brightness, colour
+balance, and gamma compared to the surrounding original frame (due to training
+distribution differences). Matching statistics in LAB rather than RGB is more
+perceptually correct because the L channel isolates luminance from chrominance,
+avoiding cross-channel colour shifts.
 
 The algorithm (Reinhard et al. 2001 simplified):
   For each LAB channel independently:
     generated_matched = (generated - μ_gen) * (σ_surr / σ_gen) + μ_surr
 
-This is a lightweight first pass; a more robust approach (e.g. optimal
-transport / colour-transfer networks) can replace it later if needed.
+Lighting & Directional Shadow Note (Known Limitation):
+─────────────────────────────────────────────────────
+Global and regional Reinhard histogram matching transfers the first two moments
+(mean brightness and contrast variance) across the entire patch. However, it does
+NOT perform directional relighting or reconstruct 3D cast shadows (e.g., strong
+side-lighting casting a dark shadow under the lower lip or on one cheek).
+
+Directional relighting and neural shading adjustments are planned for Phase 2+
+(e.g., using light-stage priors or explicit 3D face normals). In this pass, color
+matching is constrained to local reference margins adjacent to the mouth/jaw to
+avoid pulling lighting statistics from distant, differently-lit parts of the face.
 """
 
 from __future__ import annotations
@@ -34,13 +43,13 @@ def match_color(
     generated_region: np.ndarray,
     surrounding_region: np.ndarray,
 ) -> np.ndarray:
-    """Match the colour distribution of *generated_region* to *surrounding_region*.
+    """Match the colour and luminance distribution of *generated_region* to *surrounding_region*.
 
-    Both inputs are BGR uint8 images.  They do **not** need to be the same size
+    Both inputs are BGR uint8 images. They do **not** need to be the same size
     — the function computes per-channel statistics independently.
 
     Args:
-        generated_region:   BGR uint8 image (H₁, W₁, 3) — the MuseTalk output
+        generated_region:   BGR uint8 image (H₁, W₁, 3) — the MuseTalk/GFPGAN output
                             that needs colour correction.
         surrounding_region: BGR uint8 image (H₂, W₂, 3) — a patch of the
                             original frame surrounding the generation area,
@@ -80,7 +89,6 @@ def match_color(
 
     # ── Clip to valid LAB range and convert back ─────────────────────────────
     # OpenCV LAB for uint8: L ∈ [0, 255], A ∈ [0, 255], B ∈ [0, 255]
-    # (internally 0-255 mapping; L=0..100 → 0..255, a,b = -128..127 → 0..255)
     gen_lab = np.clip(gen_lab, 0, 255).astype(np.uint8)
     result = cv2.cvtColor(gen_lab, cv2.COLOR_LAB2BGR)
 

@@ -2,16 +2,24 @@
 """
 scripts/full_pipeline_demo.py
 ──────────────────────────────
-End-to-end lipsync pipeline: preprocessing → forced alignment → MuseTalk
-generation → colour matching → compositing → temporal smoothing → ffmpeg remux.
+End-to-end lipsync pipeline:
+  1. Scene detection
+  2. Face tracking & crop extraction
+  3. Forced audio alignment & viseme timeline
+  4. MuseTalk coarse generation (256×256)
+  5. GFPGAN detail refinement (optional, --skip-refinement)
+  6. Geometric inversion & colour-matched compositing (feathered jaw mask)
+  7. Temporal smoothing
+  8. FFmpeg audio remux
+  9. Automated QC scoring & HTML report generation (optional, --skip-qc)
 
-Runnable from a Colab cell with the same CLI interface as generate_demo.py:
+Runnable from Colab:
 
-    python scripts/full_pipeline_demo.py \
-        --video data/inputs/sample.mp4 \
-        --audio data/inputs/sample_dub.wav \
-        --transcript data/inputs/sample_dub.txt \
-        --checkpoint-dir models \
+    python scripts/full_pipeline_demo.py \\
+        --video data/inputs/sample.mp4 \\
+        --audio data/inputs/sample_dub.wav \\
+        --transcript data/inputs/sample_dub.txt \\
+        --checkpoint-dir models \\
         --output data/outputs/final_lipsync.mp4
 """
 
@@ -30,7 +38,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# ── PyTorch / accelerate compatibility patches (same as generate_demo.py) ────
+# ── PyTorch / accelerate compatibility patches ───────────────────────────────
 try:
     import torch
     import omegaconf
@@ -68,6 +76,7 @@ except Exception:
 # ── Imports ──────────────────────────────────────────────────────────────────
 
 from src.generation.coarse_lipsync import CoarseLipSyncGenerator
+from src.generation.refinement import FaceRefiner
 from src.postprocessing.compositing import composite_frame
 from src.postprocessing.temporal_smoothing import smooth_sequence
 from src.preprocessing.face_tracking import track_face
@@ -179,11 +188,17 @@ def _remux_with_audio(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Full lipsync pipeline: preprocess → generate → composite → output"
+        description="Full lipsync pipeline: preprocess → generate → refine → composite → output"
     )
     parser.add_argument("--video", type=Path, required=True, help="Source video path")
     parser.add_argument("--audio", type=Path, required=True, help="Dubbed WAV path")
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("models"))
+    parser.add_argument(
+        "--gfpgan-checkpoint",
+        type=Path,
+        default=Path("models/gfpgan/GFPGANv1.4.pth"),
+        help="Path to GFPGAN checkpoint for face refinement",
+    )
     parser.add_argument(
         "--transcript", type=Path, help="Optional transcript for alignment logging"
     )
@@ -203,6 +218,17 @@ def main() -> int:
         help="Gaussian blur kernel for alpha mask feathering",
     )
     parser.add_argument(
+        "--mask-dilation",
+        type=int,
+        default=15,
+        help="Morphological dilation size to extend blend region into jaw/chin",
+    )
+    parser.add_argument(
+        "--skip-refinement",
+        action="store_true",
+        help="Skip GFPGAN face refinement stage (fast coarse-only)",
+    )
+    parser.add_argument(
         "--skip-qc",
         action="store_true",
         help="Skip QC scoring (saves time during development)",
@@ -217,23 +243,33 @@ def main() -> int:
     if args.transcript and args.transcript.exists():
         transcript = args.transcript.read_text(encoding="utf-8")
 
+    # Determine total steps dynamically
+    step_num = 0
+    total_steps = 6
+    if not args.skip_refinement:
+        total_steps += 1
+    if not args.skip_qc:
+        total_steps += 1
+
     # ── 1. Preprocessing ─────────────────────────────────────────────────────
-    total_steps = 7 if args.skip_qc else 8
     logger.info("=" * 60)
-    logger.info("[1/%d] Scene detection", total_steps)
+    step_num += 1
+    logger.info("[%d/%d] Scene detection", step_num, total_steps)
     cap = cv2.VideoCapture(str(args.video))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     cap.release()
 
     scenes = detect_scenes(str(args.video))
 
-    logger.info("[2/%d] Face tracking + crop extraction", total_steps)
+    step_num += 1
+    logger.info("[%d/%d] Face tracking + crop extraction", step_num, total_steps)
     original_frames, face_crops, tracking_data = _extract_tracking_and_crops(
         args.video, scenes
     )
 
     # ── 2. Forced alignment ──────────────────────────────────────────────────
-    logger.info("[3/%d] Forced alignment", total_steps)
+    step_num += 1
+    logger.info("[%d/%d] Forced alignment", step_num, total_steps)
     aligned = align_audio(str(args.audio), transcript, fps)
     visemes = phonemes_to_visemes(aligned)
     viseme_timeline = build_viseme_timeline(visemes, len(face_crops))
@@ -246,7 +282,8 @@ def main() -> int:
     )
 
     # ── 3. MuseTalk generation ───────────────────────────────────────────────
-    logger.info("[4/%d] MuseTalk coarse generation", total_steps)
+    step_num += 1
+    logger.info("[%d/%d] MuseTalk coarse generation", step_num, total_steps)
     generator = CoarseLipSyncGenerator(str(args.checkpoint_dir))
     generated_crops = generator.generate(face_crops, str(args.audio), viseme_timeline)
 
@@ -260,8 +297,24 @@ def main() -> int:
         )
     n_frames = min(len(generated_crops), len(original_frames))
 
-    # ── 4 & 5. Colour matching + compositing ─────────────────────────────────
-    logger.info("[5/%d] Colour matching + compositing (%d frames)", total_steps, n_frames)
+    # ── 4. GFPGAN Face Refinement (optional) ──────────────────────────────────
+    if not args.skip_refinement:
+        step_num += 1
+        logger.info("[%d/%d] GFPGAN face refinement (%d frames)", step_num, total_steps, n_frames)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        try:
+            refiner = FaceRefiner(checkpoint_path=str(args.gfpgan_checkpoint), device=device)
+            generated_crops = refiner.refine_sequence(generated_crops[:n_frames])
+        except Exception as e:
+            logger.warning(
+                "Could not initialize GFPGAN refiner (%s); continuing with unrefined crops.", e
+            )
+    else:
+        logger.info("Skipping face refinement (--skip-refinement)")
+
+    # ── 5. Colour matching + compositing ─────────────────────────────────────
+    step_num += 1
+    logger.info("[%d/%d] Colour matching + compositing (%d frames)", step_num, total_steps, n_frames)
     composited_frames: list[np.ndarray] = []
     for i in range(n_frames):
         composited = composite_frame(
@@ -271,13 +324,15 @@ def main() -> int:
             landmarks=tracking_data[i]["landmarks"],
             apply_color_match=True,
             blur_kernel=args.blur_kernel,
+            mask_dilation=args.mask_dilation,
         )
         composited_frames.append(composited)
-        if (i + 1) % 100 == 0:
+        if (i + 1) % 100 == 0 or (i + 1) == n_frames:
             logger.info("  Composited %d/%d frames", i + 1, n_frames)
 
     # ── 6. Temporal smoothing ────────────────────────────────────────────────
-    logger.info("[6/%d] Temporal smoothing (window=%d)", total_steps, args.smooth_window)
+    step_num += 1
+    logger.info("[%d/%d] Temporal smoothing (window=%d)", step_num, total_steps, args.smooth_window)
     landmarks_list = [
         tracking_data[i]["landmarks"] if i < len(tracking_data) else None
         for i in range(n_frames)
@@ -289,7 +344,8 @@ def main() -> int:
     )
 
     # ── 7. Write video + remux audio ─────────────────────────────────────────
-    logger.info("[7/%d] Writing output video + audio remux", total_steps)
+    step_num += 1
+    logger.info("[%d/%d] Writing output video + audio remux", step_num, total_steps)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     # Write the video-only track first
@@ -315,9 +371,10 @@ def main() -> int:
     # Clean up intermediate video-only file
     video_only.unlink(missing_ok=True)
 
-    # ── 8. QC scoring ─────────────────────────────────────────────────────
+    # ── 8. QC scoring ────────────────────────────────────────────────────────
     if not args.skip_qc:
-        logger.info("[8/%d] QC scoring", total_steps)
+        step_num += 1
+        logger.info("[%d/%d] QC scoring", step_num, total_steps)
         roi_bboxes = [
             tracking_data[i]["bounding_box"] for i in range(n_frames)
         ]
