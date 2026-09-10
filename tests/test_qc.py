@@ -201,7 +201,7 @@ class TestBoundaryScore:
 
 class TestLipSyncScore:
     def test_no_gpu_returns_sentinel(self, synthetic_video_path, synthetic_audio_path):
-        """On CPU-only machines, LSE score should return sentinel values."""
+        """On CPU-only machines without device override, LSE score should return sentinel values."""
         from src.qc.lip_sync_score import compute_lse_score
 
         result = compute_lse_score(synthetic_video_path, synthetic_audio_path)
@@ -211,11 +211,27 @@ class TestLipSyncScore:
         assert "gpu_available" in result
         assert "n_windows" in result
 
-        # On CPU-only machine, values should be -1.0
-        # On GPU machine, they should be valid floats
         if not result["gpu_available"]:
             assert result["lse_distance"] == -1.0
             assert result["lse_confidence"] == -1.0
+
+    def test_forced_cpu_scoring_evaluates_windows(self, synthetic_video_path, synthetic_audio_path, roi_bboxes):
+        """When device='cpu' is forced, SyncNet should successfully evaluate windows and produce real scores."""
+        from src.qc.lip_sync_score import compute_lse_score
+
+        result = compute_lse_score(
+            synthetic_video_path,
+            synthetic_audio_path,
+            roi_bboxes=roi_bboxes,
+            device="cpu",
+        )
+        assert isinstance(result, dict)
+        assert result["n_windows"] > 0
+        assert isinstance(result["lse_distance"], float)
+        assert result["lse_distance"] >= 0.0
+        assert isinstance(result["lse_confidence"], float)
+        assert -1.0 <= result["lse_confidence"] <= 1.0
+
 
 
 # ── Test: Status computation ─────────────────────────────────────────────────
