@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import types
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +35,108 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _GFPGAN_ROOT = Path(__file__).parents[2] / "third_party" / "GFPGAN"
+
+
+def _ensure_basicsr_shim() -> None:
+    """Ensure minimal basicsr modules exist so GFPGAN architecture can import without pip basicsr."""
+    if "basicsr" not in sys.modules:
+        basicsr = types.ModuleType("basicsr")
+        basicsr_archs = types.ModuleType("basicsr.archs")
+        basicsr_arch_util = types.ModuleType("basicsr.archs.arch_util")
+        basicsr_utils = types.ModuleType("basicsr.utils")
+        basicsr_registry = types.ModuleType("basicsr.utils.registry")
+
+        class DummyRegistry:
+            def register(self):
+                def decorator(cls):
+                    return cls
+                return decorator
+
+        basicsr_registry.ARCH_REGISTRY = DummyRegistry()
+        basicsr_arch_util.default_init_weights = lambda module, scale=1: None
+
+        basicsr.archs = basicsr_archs
+        basicsr.archs.arch_util = basicsr_arch_util
+        basicsr.utils = basicsr_utils
+        basicsr.utils.registry = basicsr_registry
+
+        sys.modules["basicsr"] = basicsr
+        sys.modules["basicsr.archs"] = basicsr_archs
+        sys.modules["basicsr.archs.arch_util"] = basicsr_arch_util
+        sys.modules["basicsr.utils"] = basicsr_utils
+        sys.modules["basicsr.utils.registry"] = basicsr_registry
+
+
+class _DirectGFPGANRestorer:
+    """Self-contained GFPGAN restorer that runs GFPGANv1Clean directly via PyTorch.
+
+    Bypasses facexlib/basicsr build dependencies and executes on pre-aligned crops.
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        device: torch.device,
+        channel_multiplier: int = 2,
+    ) -> None:
+        import torch
+
+        _ensure_basicsr_shim()
+
+        if str(_GFPGAN_ROOT) not in sys.path:
+            sys.path.insert(0, str(_GFPGAN_ROOT))
+
+        from gfpgan.archs.gfpganv1_clean_arch import GFPGANv1Clean
+
+        self.device = device
+        self.model = GFPGANv1Clean(
+            out_size=512,
+            num_style_feat=512,
+            channel_multiplier=channel_multiplier,
+            decoder_load_path=None,
+            fix_decoder=False,
+            num_mlp=8,
+            input_is_latent=True,
+            different_w=True,
+            narrow=1,
+            sft_half=True,
+        )
+
+        loadnet = torch.load(model_path, map_location=device, weights_only=False)
+        key = "params_ema" if "params_ema" in loadnet else "params"
+        state_dict = loadnet[key] if key in loadnet else loadnet
+        self.model.load_state_dict(state_dict, strict=True)
+        self.model.eval().to(device)
+
+    def enhance(
+        self,
+        img: np.ndarray,
+        has_aligned: bool = True,
+        only_center_face: bool = True,
+        paste_back: bool = False,
+        weight: float = 0.5,
+    ) -> tuple[list[np.ndarray], list[np.ndarray], Optional[np.ndarray]]:
+        import torch
+
+        # 1. Resize input crop to 512x512
+        crop_512 = cv2.resize(img, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+
+        # 2. Convert BGR uint8 -> RGB float in [-1, 1]
+        rgb = cv2.cvtColor(crop_512, cv2.COLOR_BGR2RGB)
+        tensor = (
+            torch.from_numpy(rgb).float().permute(2, 0, 1).unsqueeze(0).to(self.device) / 255.0
+        )
+        tensor = (tensor - 0.5) / 0.5
+
+        # 3. Model inference
+        with torch.no_grad():
+            output = self.model(tensor, return_rgb=False, weight=weight)[0]
+
+        # 4. Convert back to BGR uint8
+        out_img = (output.squeeze(0).permute(1, 2, 0).clamp(-1, 1) * 0.5 + 0.5) * 255.0
+        out_bgr = cv2.cvtColor(out_img.byte().cpu().numpy(), cv2.COLOR_RGB2BGR)
+
+        return [crop_512], [out_bgr], None
 
 
 class FaceRefiner:
@@ -88,23 +191,18 @@ class FaceRefiner:
         if not ckpt.exists():
             raise FileNotFoundError(f"GFPGAN checkpoint not found: {checkpoint_path}")
 
-        if str(_GFPGAN_ROOT) not in sys.path:
-            sys.path.insert(0, str(_GFPGAN_ROOT))
+        target_device = torch.device(device)
 
+        # Initialize the self-contained direct restorer
         try:
-            from gfpgan import GFPGANer
-
-            self.restorer = GFPGANer(
+            self.restorer = _DirectGFPGANRestorer(
                 model_path=str(ckpt),
-                upscale=upscale,
-                arch=arch,
+                device=target_device,
                 channel_multiplier=channel_multiplier,
-                bg_upsampler=None,
-                device=torch.device(device),
             )
             logger.info("Loaded GFPGAN face refiner from: %s (device: %s)", checkpoint_path, device)
         except Exception as e:
-            logger.error("Failed to initialize GFPGANer: %s", e)
+            logger.error("Failed to initialize GFPGAN restorer: %s", e)
             raise
 
     def refine(
@@ -144,8 +242,8 @@ class FaceRefiner:
 
             if restored_faces and len(restored_faces) > 0 and restored_faces[0] is not None:
                 restored = restored_faces[0]
-                # GFPGAN typically produces 512x512 output.
-                # Resize back to target_size to prevent conflicting resizes in compositing.
+                # GFPGAN produces 512x512 output.
+                # Resize back to target_size to prevent conflicting resizes in downstream compositing.
                 if (restored.shape[1], restored.shape[0]) != (out_w, out_h):
                     restored = cv2.resize(
                         restored, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4
