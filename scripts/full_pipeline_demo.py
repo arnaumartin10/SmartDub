@@ -74,6 +74,7 @@ from src.preprocessing.face_tracking import track_face
 from src.preprocessing.forced_alignment import align_audio
 from src.preprocessing.scene_detection import detect_scenes
 from src.preprocessing.viseme_mapping import build_viseme_timeline, phonemes_to_visemes
+from src.qc.qc_report import generate_qc_report
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger("full_pipeline_demo")
@@ -201,6 +202,11 @@ def main() -> int:
         default=51,
         help="Gaussian blur kernel for alpha mask feathering",
     )
+    parser.add_argument(
+        "--skip-qc",
+        action="store_true",
+        help="Skip QC scoring (saves time during development)",
+    )
     args = parser.parse_args()
 
     for input_path in (args.video, args.audio):
@@ -212,21 +218,22 @@ def main() -> int:
         transcript = args.transcript.read_text(encoding="utf-8")
 
     # ── 1. Preprocessing ─────────────────────────────────────────────────────
+    total_steps = 7 if args.skip_qc else 8
     logger.info("=" * 60)
-    logger.info("[1/7] Scene detection")
+    logger.info("[1/%d] Scene detection", total_steps)
     cap = cv2.VideoCapture(str(args.video))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     cap.release()
 
     scenes = detect_scenes(str(args.video))
 
-    logger.info("[2/7] Face tracking + crop extraction")
+    logger.info("[2/%d] Face tracking + crop extraction", total_steps)
     original_frames, face_crops, tracking_data = _extract_tracking_and_crops(
         args.video, scenes
     )
 
     # ── 2. Forced alignment ──────────────────────────────────────────────────
-    logger.info("[3/7] Forced alignment")
+    logger.info("[3/%d] Forced alignment", total_steps)
     aligned = align_audio(str(args.audio), transcript, fps)
     visemes = phonemes_to_visemes(aligned)
     viseme_timeline = build_viseme_timeline(visemes, len(face_crops))
@@ -239,7 +246,7 @@ def main() -> int:
     )
 
     # ── 3. MuseTalk generation ───────────────────────────────────────────────
-    logger.info("[4/7] MuseTalk coarse generation")
+    logger.info("[4/%d] MuseTalk coarse generation", total_steps)
     generator = CoarseLipSyncGenerator(str(args.checkpoint_dir))
     generated_crops = generator.generate(face_crops, str(args.audio), viseme_timeline)
 
@@ -254,7 +261,7 @@ def main() -> int:
     n_frames = min(len(generated_crops), len(original_frames))
 
     # ── 4 & 5. Colour matching + compositing ─────────────────────────────────
-    logger.info("[5/7] Colour matching + compositing (%d frames)", n_frames)
+    logger.info("[5/%d] Colour matching + compositing (%d frames)", total_steps, n_frames)
     composited_frames: list[np.ndarray] = []
     for i in range(n_frames):
         composited = composite_frame(
@@ -270,7 +277,7 @@ def main() -> int:
             logger.info("  Composited %d/%d frames", i + 1, n_frames)
 
     # ── 6. Temporal smoothing ────────────────────────────────────────────────
-    logger.info("[6/7] Temporal smoothing (window=%d)", args.smooth_window)
+    logger.info("[6/%d] Temporal smoothing (window=%d)", total_steps, args.smooth_window)
     landmarks_list = [
         tracking_data[i]["landmarks"] if i < len(tracking_data) else None
         for i in range(n_frames)
@@ -282,7 +289,7 @@ def main() -> int:
     )
 
     # ── 7. Write video + remux audio ─────────────────────────────────────────
-    logger.info("[7/7] Writing output video + audio remux")
+    logger.info("[7/%d] Writing output video + audio remux", total_steps)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     # Write the video-only track first
@@ -307,6 +314,22 @@ def main() -> int:
 
     # Clean up intermediate video-only file
     video_only.unlink(missing_ok=True)
+
+    # ── 8. QC scoring ─────────────────────────────────────────────────────
+    if not args.skip_qc:
+        logger.info("[8/%d] QC scoring", total_steps)
+        roi_bboxes = [
+            tracking_data[i]["bounding_box"] for i in range(n_frames)
+        ]
+        qc_results = generate_qc_report(
+            video_path=str(args.output),
+            audio_path=str(args.audio),
+            roi_bboxes=roi_bboxes,
+            output_dir=str(args.output.parent),
+        )
+        logger.info("QC report: %s", qc_results.get("report_html_path", "N/A"))
+    else:
+        logger.info("Skipping QC scoring (--skip-qc)")
 
     logger.info("=" * 60)
     logger.info("DONE — Final output: %s", args.output)
