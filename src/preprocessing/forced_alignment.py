@@ -61,6 +61,13 @@ _ARPABET_TOKEN = re.compile(r"^[A-Z]+[0-2]?$")
 
 def _load_g2p():
     try:
+        import nltk
+
+        for resource in ("averaged_perceptron_tagger", "averaged_perceptron_tagger_eng", "cmudict"):
+            try:
+                nltk.download(resource, quiet=True)
+            except Exception:
+                pass
         from g2p_en import G2p
     except ImportError as exc:
         raise RuntimeError(
@@ -116,7 +123,31 @@ def _run_whisperx(audio_path: Path, transcript: str, duration: float) -> dict[st
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
     audio = whisperx.load_audio(str(audio_path))
-    model = whisperx.load_model("small", device, compute_type=compute_type)
+
+    # PyTorch 2.6+ defaults torch.load to weights_only=True, which breaks
+    # pyannote VAD model loading (used by whisperx) due to OmegaConf objects.
+    try:
+        import omegaconf
+        if hasattr(torch.serialization, "add_safe_globals"):
+            torch.serialization.add_safe_globals([
+                omegaconf.listconfig.ListConfig,
+                omegaconf.dictconfig.DictConfig,
+            ])
+    except Exception:
+        pass
+
+    _orig_torch_load = getattr(torch, "_orig_torch_load", torch.load)
+    torch._orig_torch_load = _orig_torch_load
+
+    def _safe_torch_load(*args: Any, **kwargs: Any) -> Any:
+        kwargs["weights_only"] = False
+        return _orig_torch_load(*args, **kwargs)
+
+    torch.load = _safe_torch_load
+    try:
+        model = whisperx.load_model("small", device, compute_type=compute_type)
+    finally:
+        torch.load = _orig_torch_load
 
     if transcript.strip():
         segments = [{"start": 0.0, "end": duration, "text": transcript.strip()}]

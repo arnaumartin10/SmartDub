@@ -106,18 +106,43 @@ class CoarseLipSyncGenerator:
         if str(_MUSETALK_ROOT) not in sys.path:
             sys.path.insert(0, str(_MUSETALK_ROOT))
 
+        # Compatibility patch for accelerate < 0.31 with newer peft/diffusers
+        try:
+            import accelerate.utils.memory
+
+            if not hasattr(accelerate.utils.memory, "clear_device_cache"):
+                def clear_device_cache(*args, **kwargs):
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                accelerate.utils.memory.clear_device_cache = clear_device_cache
+        except Exception:
+            pass
+
         from musetalk.utils.audio_processor import AudioProcessor
         from musetalk.utils.utils import load_all_model
         from transformers import WhisperModel
 
         self.device = torch.device(device)
         self._torch = torch
-        self._vae, self._unet, self._pe = load_all_model(
-            unet_model_path=str(unet_path),
-            vae_type=str(vae_dir),
-            unet_config=str(config_path),
-            device=self.device,
-        )
+        # MuseTalk's load_all_model internally does os.path.join("models", vae_type).
+        # Pass vae_dir.name ("sd-vae") when in models/, and fallback to direct instantiation.
+        vae_type_arg = vae_dir.name if (Path("models") / vae_dir.name).exists() else str(vae_dir)
+        try:
+            self._vae, self._unet, self._pe = load_all_model(
+                unet_model_path=str(unet_path),
+                vae_type=vae_type_arg,
+                unet_config=str(config_path),
+                device=self.device,
+            )
+        except Exception:
+            from musetalk.models.vae import VAE
+            from musetalk.models.unet import UNet, PositionalEncoding
+
+            vae = VAE(model_path=str(vae_dir))
+            unet = UNet(unet_config=str(config_path), model_path=str(unet_path), device=self.device)
+            pe = PositionalEncoding(d_model=384)
+            self._vae, self._unet, self._pe = vae, unet, pe
         self._audio_processor = AudioProcessor(feature_extractor_path=str(whisper_dir))
         self._whisper = WhisperModel.from_pretrained(str(whisper_dir)).to(self.device).eval()
         self._dtype = torch.float16

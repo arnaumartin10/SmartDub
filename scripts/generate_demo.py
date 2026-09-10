@@ -12,6 +12,43 @@ import cv2
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# PyTorch 2.6+ defaults torch.load to weights_only=True, which breaks legacy
+# checkpoints (such as pyannote/whisperx VAD models with OmegaConf and MuseTalk).
+try:
+    import torch
+    import omegaconf
+
+    if hasattr(torch.serialization, "add_safe_globals"):
+        torch.serialization.add_safe_globals([
+            omegaconf.listconfig.ListConfig,
+            omegaconf.dictconfig.DictConfig,
+        ])
+
+    _orig_torch_load = getattr(torch, "_orig_torch_load", torch.load)
+    torch._orig_torch_load = _orig_torch_load
+
+    def _safe_torch_load(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return _orig_torch_load(*args, **kwargs)
+
+    torch.load = _safe_torch_load
+except Exception:
+    pass
+
+# Compatibility patch for accelerate < 0.31 with newer peft/diffusers
+try:
+    import accelerate.utils.memory
+
+    if not hasattr(accelerate.utils.memory, "clear_device_cache"):
+        def clear_device_cache(*args, **kwargs):
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        accelerate.utils.memory.clear_device_cache = clear_device_cache
+except Exception:
+    pass
+
 from src.generation.coarse_lipsync import CoarseLipSyncGenerator
 from src.preprocessing.face_tracking import track_face
 from src.preprocessing.forced_alignment import align_audio
